@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const ytdl = require('@distube/ytdl-core');
 
 const app = express();
 const PORT = 5000;
@@ -79,36 +80,33 @@ app.get('/download', async (req, res) => {
       });
     }
 
+    if (!ytdl.validateURL(urlytb)) {
+      return res.status(400).json({
+        success: false,
+        error: 'URL YouTube invalide'
+      });
+    }
+
+    const info = await ytdl.getInfo(urlytb);
     const isAudioOnly = type.toUpperCase() === 'MP3';
     
-    const response = await axios.post('https://api.cobalt.tools/api/json', {
-      url: urlytb,
-      vCodec: 'h264',
-      vQuality: '720',
-      aFormat: 'mp3',
-      isAudioOnly: isAudioOnly,
-      disableMetadata: false
-    }, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = response.data;
-
-    if (data.status === 'error' || data.status === 'rate-limit') {
-      throw new Error(data.text || 'Erreur lors du téléchargement');
+    let format;
+    if (isAudioOnly) {
+      format = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
+    } else {
+      format = ytdl.chooseFormat(info.formats, { quality: 'highest' });
     }
 
     res.json({
       success: true,
-      status: data.status,
-      url: data.url,
-      filename: data.filename || `video.${type.toLowerCase()}`,
-      quality: isAudioOnly ? 'audio' : '720p',
+      title: info.videoDetails.title,
+      author: info.videoDetails.author.name,
+      duration: info.videoDetails.lengthSeconds,
+      url: format.url,
+      quality: format.qualityLabel || format.audioBitrate + 'kbps',
       type: type.toUpperCase(),
-      service: 'cobalt.tools',
+      container: format.container,
+      service: 'ytdl-core',
       timestamp: new Date().toISOString()
     });
 
@@ -116,7 +114,7 @@ app.get('/download', async (req, res) => {
     console.error('Erreur download:', error.message);
     res.status(500).json({
       success: false,
-      error: error.response?.data?.text || error.message || 'Erreur lors du téléchargement',
+      error: error.message || 'Erreur lors du téléchargement',
       timestamp: new Date().toISOString()
     });
   }
