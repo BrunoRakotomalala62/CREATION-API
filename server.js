@@ -94,7 +94,18 @@ app.get('/download', async (req, res) => {
     if (isAudioOnly) {
       format = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
     } else {
-      format = ytdl.chooseFormat(info.formats, { quality: 'highest' });
+      const muxedFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
+      if (muxedFormats.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Aucun format MP4 avec audio et vidéo disponible pour cette vidéo. Essayez le type MP3 pour audio uniquement.'
+        });
+      }
+      format = muxedFormats.reduce((best, current) => {
+        const bestHeight = parseInt(best.qualityLabel) || 0;
+        const currentHeight = parseInt(current.qualityLabel) || 0;
+        return currentHeight > bestHeight ? current : best;
+      });
     }
 
     res.json({
@@ -106,6 +117,8 @@ app.get('/download', async (req, res) => {
       quality: format.qualityLabel || format.audioBitrate + 'kbps',
       type: type.toUpperCase(),
       container: format.container,
+      hasAudio: format.hasAudio,
+      hasVideo: format.hasVideo,
       service: 'ytdl-core',
       timestamp: new Date().toISOString()
     });
