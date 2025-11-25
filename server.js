@@ -23,14 +23,15 @@ app.get('/', (req, res) => {
     description: 'Téléchargez des vidéos et de la musique YouTube en MP3 et MP4 avec différentes qualités',
     endpoints: {
       recherche: '/recherche?titre=votre_recherche',
-      download: '/download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p'
+      download: '/download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p (retourne les infos JSON)',
+      stream: '/stream?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p (téléchargement DIRECT)'
     },
     examples: {
       recherche: '/recherche?titre=metamorphosis',
       downloadMP3: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3',
       downloadMP4_highest: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=highest',
-      downloadMP4_720p: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720p',
-      downloadMP4_360p: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=360p'
+      streamMP3: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3 (TÉLÉCHARGEMENT DIRECT)',
+      streamMP4_720p: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720p (TÉLÉCHARGEMENT DIRECT)'
     },
     availableQualities: {
       MP4: ['highest (meilleure qualité)', 'lowest (plus petite taille)', '720p', '480p', '360p', '240p', '144p'],
@@ -41,8 +42,13 @@ app.get('/', (req, res) => {
       'Support MP3 et MP4',
       'Choix de qualité flexible',
       'Informations détaillées sur la vidéo',
-      'Recherche par titre'
-    ]
+      'Recherche par titre',
+      '✨ NOUVEAU: Endpoint /stream pour téléchargement direct sans clic supplémentaire!'
+    ],
+    notes: {
+      download: 'Retourne les informations et l\'URL de téléchargement en JSON',
+      stream: '⭐ RECOMMANDÉ pour mobile: Télécharge directement le fichier dans votre répertoire de téléchargements!'
+    }
   });
 });
 
@@ -80,6 +86,155 @@ app.get('/recherche', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.response?.data?.error || error.message || 'Erreur lors de la recherche'
+    });
+  }
+});
+
+app.get('/stream', async (req, res) => {
+  try {
+    const { urlytb, type, quality } = req.query;
+    
+    if (!urlytb) {
+      return res.status(400).json({
+        success: false,
+        error: 'Paramètre "urlytb" manquant'
+      });
+    }
+
+    if (!type || !['MP3', 'MP4', 'mp3', 'mp4'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Paramètre "type" invalide. Utilisez: MP3 ou MP4'
+      });
+    }
+
+    if (!validateYouTubeURL(urlytb)) {
+      return res.status(400).json({
+        success: false,
+        error: 'URL YouTube invalide'
+      });
+    }
+
+    const info = await ytdl.getFullInfo(urlytb);
+    const isAudioOnly = type.toUpperCase() === 'MP3';
+    
+    let format;
+    let downloadUrl;
+
+    if (isAudioOnly) {
+      const formatsWithAudio = info.formats.filter(f => f.hasAudio && f.url);
+      if (formatsWithAudio.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Aucun format audio disponible'
+        });
+      }
+      
+      const audioOnlyFormats = formatsWithAudio.filter(f => !f.hasVideo);
+      if (audioOnlyFormats.length > 0) {
+        format = audioOnlyFormats.reduce((best, current) => {
+          const bestBitrate = parseInt(best.audioBitrate) || 0;
+          const currentBitrate = parseInt(current.audioBitrate) || 0;
+          return currentBitrate > bestBitrate ? current : best;
+        });
+      } else {
+        const lowQualityFormats = formatsWithAudio.filter(f => f.hasVideo && f.hasAudio);
+        format = lowQualityFormats.reduce((best, current) => {
+          const bestBitrate = parseInt(best.audioBitrate) || 0;
+          const currentBitrate = parseInt(current.audioBitrate) || 0;
+          const bestHeight = parseInt(best.height) || 9999;
+          const currentHeight = parseInt(current.height) || 9999;
+          
+          if (currentBitrate > bestBitrate) return current;
+          if (currentBitrate === bestBitrate && currentHeight < bestHeight) return current;
+          return best;
+        });
+      }
+      downloadUrl = format.url;
+    } else {
+      const requestedQuality = quality || 'highest';
+      
+      if (requestedQuality === 'highest' || requestedQuality === 'lowest') {
+        const videoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
+        if (videoFormats.length > 0) {
+          format = videoFormats.reduce((best, current) => {
+            const bestHeight = parseInt(best.height) || 0;
+            const currentHeight = parseInt(current.height) || 0;
+            if (requestedQuality === 'highest') {
+              return currentHeight > bestHeight ? current : best;
+            } else {
+              return currentHeight < bestHeight && currentHeight > 0 ? current : best;
+            }
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: 'Aucun format MP4 disponible'
+          });
+        }
+      } else {
+        const targetHeight = parseInt(requestedQuality);
+        const videoFormats = info.formats.filter(f => 
+          f.hasVideo && 
+          f.hasAudio && 
+          parseInt(f.height) === targetHeight
+        );
+        
+        if (videoFormats.length > 0) {
+          format = videoFormats[0];
+        } else {
+          const allVideoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
+          if (allVideoFormats.length > 0) {
+            format = allVideoFormats.reduce((best, current) => {
+              const bestDiff = Math.abs(parseInt(best.height) - targetHeight);
+              const currentDiff = Math.abs(parseInt(current.height) - targetHeight);
+              return currentDiff < bestDiff ? current : best;
+            });
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: `Qualité ${requestedQuality} non disponible`
+            });
+          }
+        }
+      }
+      downloadUrl = format.url;
+    }
+
+    if (!downloadUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'Impossible de générer l\'URL de téléchargement'
+      });
+    }
+
+    // Créer un nom de fichier sécurisé
+    const sanitizedTitle = info.videoDetails.title
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '_')
+      .substring(0, 100);
+    
+    const extension = isAudioOnly ? 'mp3' : 'mp4';
+    const filename = `${sanitizedTitle}.${extension}`;
+
+    // Configurer les en-têtes pour forcer le téléchargement
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', isAudioOnly ? 'audio/mpeg' : 'video/mp4');
+
+    // Streamer le fichier depuis YouTube vers le client
+    const response = await axios({
+      method: 'get',
+      url: downloadUrl,
+      responseType: 'stream'
+    });
+
+    response.data.pipe(res);
+
+  } catch (error) {
+    console.error('Erreur stream:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Erreur lors du streaming'
     });
   }
 });
