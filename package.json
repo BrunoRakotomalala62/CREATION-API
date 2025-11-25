@@ -15,10 +15,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.12",
+    "@ybd-project/ytdl-core": "^6.0.8",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "y2mate-dl": "^1.0.4"
+    "fluent-ffmpeg": "^2.1.3"
   }
 }
