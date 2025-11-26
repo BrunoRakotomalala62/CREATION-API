@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const y2mate = require('y2mate-dl');
 
 const app = express();
 const PORT = 5000;
@@ -13,55 +14,9 @@ function validateYouTubeURL(url) {
   return youtubeRegex.test(url);
 }
 
-async function getCobaltDownload(url, isAudio = false, quality = '720') {
-  const cobaltInstances = [
-    'https://cobalt-api.kwiatekmiki.com',
-    'https://cobalt.api.timelessnesses.me',
-    'https://api.cobalt.tools'
-  ];
-
-  const requestBody = {
-    url: url,
-    videoQuality: quality,
-    audioFormat: 'mp3',
-    audioBitrate: '128',
-    filenameStyle: 'basic',
-    downloadMode: isAudio ? 'audio' : 'auto'
-  };
-
-  for (const instance of cobaltInstances) {
-    try {
-      const response = await axios.post(instance, requestBody, {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      });
-
-      if (response.data && (response.data.status === 'tunnel' || response.data.status === 'redirect')) {
-        return {
-          success: true,
-          url: response.data.url,
-          filename: response.data.filename,
-          instance: instance
-        };
-      } else if (response.data && response.data.status === 'picker') {
-        const firstItem = response.data.picker[0];
-        return {
-          success: true,
-          url: firstItem.url,
-          filename: response.data.audioFilename || 'download',
-          instance: instance
-        };
-      }
-    } catch (error) {
-      console.log(`Instance ${instance} failed:`, error.message);
-      continue;
-    }
-  }
-
-  throw new Error('Tous les serveurs de téléchargement sont indisponibles. Réessayez plus tard.');
+function getVideoId(url) {
+  const match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
 }
 
 app.get('/', (req, res) => {
@@ -159,11 +114,32 @@ app.get('/stream', async (req, res) => {
     }
 
     const isAudio = type.toUpperCase() === 'MP3';
-    const videoQuality = quality || '720';
+    let result;
 
-    const result = await getCobaltDownload(urlytb, isAudio, videoQuality);
+    try {
+      if (isAudio) {
+        result = await y2mate.ytmp3(urlytb);
+      } else {
+        const qualityNum = quality || '720';
+        if (qualityNum === '720' || qualityNum === 'highest') {
+          result = await y2mate.yt720(urlytb);
+        } else if (qualityNum === '480') {
+          result = await y2mate.yt480(urlytb);
+        } else if (qualityNum === '360') {
+          result = await y2mate.yt360(urlytb);
+        } else {
+          result = await y2mate.yt720(urlytb);
+        }
+      }
+    } catch (y2mateError) {
+      console.error('Y2mate error:', y2mateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Service de téléchargement temporairement indisponible'
+      });
+    }
 
-    if (!result.success) {
+    if (!result || !result.dl_link) {
       return res.status(500).json({
         success: false,
         error: 'Impossible de récupérer le lien de téléchargement'
@@ -171,14 +147,14 @@ app.get('/stream', async (req, res) => {
     }
 
     const extension = isAudio ? 'mp3' : 'mp4';
-    const filename = result.filename || `download.${extension}`;
+    const filename = `${result.title || 'download'}.${extension}`.replace(/[^\w\s.-]/g, '_');
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', isAudio ? 'audio/mpeg' : 'video/mp4');
 
     const response = await axios({
       method: 'get',
-      url: result.url,
+      url: result.dl_link,
       responseType: 'stream',
       timeout: 300000,
       headers: {
@@ -225,18 +201,48 @@ app.get('/download', async (req, res) => {
     }
 
     const isAudio = type.toUpperCase() === 'MP3';
-    const videoQuality = quality || '720';
+    let result;
 
-    const result = await getCobaltDownload(urlytb, isAudio, videoQuality);
+    try {
+      if (isAudio) {
+        result = await y2mate.ytmp3(urlytb);
+      } else {
+        const qualityNum = quality || '720';
+        if (qualityNum === '720' || qualityNum === 'highest') {
+          result = await y2mate.yt720(urlytb);
+        } else if (qualityNum === '480') {
+          result = await y2mate.yt480(urlytb);
+        } else if (qualityNum === '360') {
+          result = await y2mate.yt360(urlytb);
+        } else {
+          result = await y2mate.yt720(urlytb);
+        }
+      }
+    } catch (y2mateError) {
+      console.error('Y2mate error:', y2mateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Service de téléchargement temporairement indisponible',
+        details: y2mateError.message
+      });
+    }
+
+    if (!result || !result.dl_link) {
+      return res.status(500).json({
+        success: false,
+        error: 'Impossible de récupérer le lien de téléchargement'
+      });
+    }
 
     res.json({
       success: true,
-      url: result.url,
-      filename: result.filename,
+      title: result.title,
+      url: result.dl_link,
       type: type.toUpperCase(),
-      quality: isAudio ? '128kbps' : `${videoQuality}p`,
+      quality: isAudio ? '128kbps' : `${quality || '720'}p`,
+      filesize: result.fsize || 'N/A',
       streamUrl: `/stream?urlytb=${encodeURIComponent(urlytb)}&type=${type}${quality ? '&quality=' + quality : ''}`,
-      service: 'Cobalt',
+      service: 'Y2mate',
       timestamp: new Date().toISOString()
     });
 
@@ -256,5 +262,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   - GET /recherche?titre=...`);
   console.log(`   - GET /download?urlytb=...&type=MP3|MP4`);
   console.log(`   - GET /stream?urlytb=...&type=MP3|MP4`);
-  console.log(`🔧 Powered by Cobalt API`);
+  console.log(`🔧 Powered by Y2mate`);
 });
