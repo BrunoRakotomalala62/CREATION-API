@@ -1,7 +1,10 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { YtdlCore } = require('@ybd-project/ytdl-core');
+const { exec, spawn } = require('child_process');
+const { promisify } = require('util');
+
+const execAsync = promisify(exec);
 
 const app = express();
 const PORT = 5000;
@@ -9,11 +12,18 @@ const PORT = 5000;
 app.use(cors());
 app.use(express.json());
 
-const ytdl = new YtdlCore();
-
 function validateYouTubeURL(url) {
   const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   return youtubeRegex.test(url);
+}
+
+async function getVideoInfo(url) {
+  try {
+    const { stdout } = await execAsync(`yt-dlp -j "${url}"`, { maxBuffer: 10 * 1024 * 1024 });
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`Erreur lors de la récupération des informations: ${error.message}`);
+  }
 }
 
 app.get('/', (req, res) => {
@@ -38,16 +48,16 @@ app.get('/', (req, res) => {
       MP3: ['128kbps (audio uniquement)']
     },
     features: [
-      'Téléchargement direct YouTube',
+      'Téléchargement direct YouTube via yt-dlp',
       'Support MP3 et MP4',
       'Choix de qualité flexible',
       'Informations détaillées sur la vidéo',
       'Recherche par titre',
-      '✨ NOUVEAU: Endpoint /stream pour téléchargement direct sans clic supplémentaire!'
+      'Endpoint /stream pour téléchargement direct!'
     ],
     notes: {
       download: 'Retourne les informations et l\'URL de téléchargement en JSON',
-      stream: '⭐ RECOMMANDÉ pour mobile: Télécharge directement le fichier dans votre répertoire de téléchargements!'
+      stream: 'RECOMMANDÉ pour mobile: Télécharge directement le fichier dans votre répertoire de téléchargements!'
     }
   });
 });
@@ -115,101 +125,10 @@ app.get('/stream', async (req, res) => {
       });
     }
 
-    const info = await ytdl.getFullInfo(urlytb);
+    const info = await getVideoInfo(urlytb);
     const isAudioOnly = type.toUpperCase() === 'MP3';
     
-    let format;
-    let downloadUrl;
-
-    if (isAudioOnly) {
-      const formatsWithAudio = info.formats.filter(f => f.hasAudio && f.url);
-      if (formatsWithAudio.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Aucun format audio disponible'
-        });
-      }
-      
-      const audioOnlyFormats = formatsWithAudio.filter(f => !f.hasVideo);
-      if (audioOnlyFormats.length > 0) {
-        format = audioOnlyFormats.reduce((best, current) => {
-          const bestBitrate = parseInt(best.audioBitrate) || 0;
-          const currentBitrate = parseInt(current.audioBitrate) || 0;
-          return currentBitrate > bestBitrate ? current : best;
-        });
-      } else {
-        const lowQualityFormats = formatsWithAudio.filter(f => f.hasVideo && f.hasAudio);
-        format = lowQualityFormats.reduce((best, current) => {
-          const bestBitrate = parseInt(best.audioBitrate) || 0;
-          const currentBitrate = parseInt(current.audioBitrate) || 0;
-          const bestHeight = parseInt(best.height) || 9999;
-          const currentHeight = parseInt(current.height) || 9999;
-          
-          if (currentBitrate > bestBitrate) return current;
-          if (currentBitrate === bestBitrate && currentHeight < bestHeight) return current;
-          return best;
-        });
-      }
-      downloadUrl = format.url;
-    } else {
-      const requestedQuality = quality || 'highest';
-      
-      if (requestedQuality === 'highest' || requestedQuality === 'lowest') {
-        const videoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
-        if (videoFormats.length > 0) {
-          format = videoFormats.reduce((best, current) => {
-            const bestHeight = parseInt(best.height) || 0;
-            const currentHeight = parseInt(current.height) || 0;
-            if (requestedQuality === 'highest') {
-              return currentHeight > bestHeight ? current : best;
-            } else {
-              return currentHeight < bestHeight && currentHeight > 0 ? current : best;
-            }
-          });
-        } else {
-          return res.status(400).json({
-            success: false,
-            error: 'Aucun format MP4 disponible'
-          });
-        }
-      } else {
-        const targetHeight = parseInt(requestedQuality);
-        const videoFormats = info.formats.filter(f => 
-          f.hasVideo && 
-          f.hasAudio && 
-          parseInt(f.height) === targetHeight
-        );
-        
-        if (videoFormats.length > 0) {
-          format = videoFormats[0];
-        } else {
-          const allVideoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
-          if (allVideoFormats.length > 0) {
-            format = allVideoFormats.reduce((best, current) => {
-              const bestDiff = Math.abs(parseInt(best.height) - targetHeight);
-              const currentDiff = Math.abs(parseInt(current.height) - targetHeight);
-              return currentDiff < bestDiff ? current : best;
-            });
-          } else {
-            return res.status(400).json({
-              success: false,
-              error: `Qualité ${requestedQuality} non disponible`
-            });
-          }
-        }
-      }
-      downloadUrl = format.url;
-    }
-
-    if (!downloadUrl) {
-      return res.status(500).json({
-        success: false,
-        error: 'Impossible de générer l\'URL de téléchargement'
-      });
-    }
-
-    // Créer un nom de fichier sécurisé
-    const sanitizedTitle = info.videoDetails.title
+    const sanitizedTitle = info.title
       .replace(/[^\w\s-]/g, '')
       .replace(/\s+/g, '_')
       .substring(0, 100);
@@ -217,18 +136,54 @@ app.get('/stream', async (req, res) => {
     const extension = isAudioOnly ? 'mp3' : 'mp4';
     const filename = `${sanitizedTitle}.${extension}`;
 
-    // Configurer les en-têtes pour forcer le téléchargement
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', isAudioOnly ? 'audio/mpeg' : 'video/mp4');
 
-    // Streamer le fichier depuis YouTube vers le client
-    const response = await axios({
-      method: 'get',
-      url: downloadUrl,
-      responseType: 'stream'
+    let formatArg;
+    if (isAudioOnly) {
+      formatArg = '-f bestaudio -x --audio-format mp3';
+    } else {
+      const requestedQuality = quality || 'highest';
+      if (requestedQuality === 'highest') {
+        formatArg = '-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"';
+      } else if (requestedQuality === 'lowest') {
+        formatArg = '-f "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst"';
+      } else {
+        const height = parseInt(requestedQuality);
+        formatArg = `-f "bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best"`;
+      }
+    }
+
+    const ytdlp = spawn('yt-dlp', [
+      ...formatArg.split(' '),
+      '-o', '-',
+      urlytb
+    ], { shell: true });
+
+    ytdlp.stdout.pipe(res);
+
+    ytdlp.stderr.on('data', (data) => {
+      console.error('yt-dlp stderr:', data.toString());
     });
 
-    response.data.pipe(res);
+    ytdlp.on('error', (error) => {
+      console.error('yt-dlp error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          error: 'Erreur lors du téléchargement'
+        });
+      }
+    });
+
+    ytdlp.on('close', (code) => {
+      if (code !== 0 && !res.headersSent) {
+        res.status(500).json({
+          success: false,
+          error: `yt-dlp exited with code ${code}`
+        });
+      }
+    });
 
   } catch (error) {
     console.error('Erreur stream:', error.message);
@@ -264,123 +219,93 @@ app.get('/download', async (req, res) => {
       });
     }
 
-    const info = await ytdl.getFullInfo(urlytb);
+    const info = await getVideoInfo(urlytb);
     const isAudioOnly = type.toUpperCase() === 'MP3';
     
-    let format;
+    const formats = info.formats || [];
+    let selectedFormat;
     let downloadUrl;
 
     if (isAudioOnly) {
-      const formatsWithAudio = info.formats.filter(f => f.hasAudio && f.url);
-      if (formatsWithAudio.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Aucun format audio disponible avec URL directe pour cette vidéo.'
-        });
-      }
-      
-      const audioOnlyFormats = formatsWithAudio.filter(f => !f.hasVideo);
-      if (audioOnlyFormats.length > 0) {
-        format = audioOnlyFormats.reduce((best, current) => {
-          const bestBitrate = parseInt(best.audioBitrate) || 0;
-          const currentBitrate = parseInt(current.audioBitrate) || 0;
+      const audioFormats = formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none' && f.url);
+      if (audioFormats.length > 0) {
+        selectedFormat = audioFormats.reduce((best, current) => {
+          const bestBitrate = best.abr || 0;
+          const currentBitrate = current.abr || 0;
           return currentBitrate > bestBitrate ? current : best;
         });
       } else {
-        const lowQualityFormats = formatsWithAudio.filter(f => f.hasVideo && f.hasAudio);
-        format = lowQualityFormats.reduce((best, current) => {
-          const bestBitrate = parseInt(best.audioBitrate) || 0;
-          const currentBitrate = parseInt(current.audioBitrate) || 0;
-          const bestHeight = parseInt(best.height) || 9999;
-          const currentHeight = parseInt(current.height) || 9999;
-          
-          if (currentBitrate > bestBitrate) return current;
-          if (currentBitrate === bestBitrate && currentHeight < bestHeight) return current;
-          return best;
-        });
+        const anyAudio = formats.filter(f => f.acodec !== 'none' && f.url);
+        if (anyAudio.length > 0) {
+          selectedFormat = anyAudio[0];
+        }
       }
-      downloadUrl = format.url;
     } else {
       const requestedQuality = quality || 'highest';
-      
-      if (requestedQuality === 'highest' || requestedQuality === 'lowest') {
-        const videoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
-        if (videoFormats.length > 0) {
-          format = videoFormats.reduce((best, current) => {
-            const bestHeight = parseInt(best.height) || 0;
-            const currentHeight = parseInt(current.height) || 0;
-            if (requestedQuality === 'highest') {
-              return currentHeight > bestHeight ? current : best;
-            } else {
-              return currentHeight < bestHeight && currentHeight > 0 ? current : best;
-            }
+      const videoFormats = formats.filter(f => 
+        f.vcodec !== 'none' && 
+        f.acodec !== 'none' && 
+        f.url &&
+        f.height
+      );
+
+      if (videoFormats.length > 0) {
+        if (requestedQuality === 'highest') {
+          selectedFormat = videoFormats.reduce((best, current) => {
+            return (current.height || 0) > (best.height || 0) ? current : best;
+          });
+        } else if (requestedQuality === 'lowest') {
+          selectedFormat = videoFormats.reduce((best, current) => {
+            return (current.height || 9999) < (best.height || 9999) ? current : best;
           });
         } else {
-          return res.status(400).json({
-            success: false,
-            error: 'Aucun format MP4 avec vidéo et audio disponible. Essayez MP3 pour audio uniquement.'
+          const targetHeight = parseInt(requestedQuality);
+          selectedFormat = videoFormats.reduce((best, current) => {
+            const bestDiff = Math.abs((best.height || 0) - targetHeight);
+            const currentDiff = Math.abs((current.height || 0) - targetHeight);
+            return currentDiff < bestDiff ? current : best;
           });
-        }
-      } else {
-        const targetHeight = parseInt(requestedQuality);
-        const videoFormats = info.formats.filter(f => 
-          f.hasVideo && 
-          f.hasAudio && 
-          parseInt(f.height) === targetHeight
-        );
-        
-        if (videoFormats.length > 0) {
-          format = videoFormats[0];
-        } else {
-          const allVideoFormats = info.formats.filter(f => f.hasVideo && f.hasAudio);
-          if (allVideoFormats.length > 0) {
-            format = allVideoFormats.reduce((best, current) => {
-              const bestDiff = Math.abs(parseInt(best.height) - targetHeight);
-              const currentDiff = Math.abs(parseInt(current.height) - targetHeight);
-              return currentDiff < bestDiff ? current : best;
-            });
-          } else {
-            return res.status(400).json({
-              success: false,
-              error: `Qualité ${requestedQuality} non disponible. Essayez: highest, lowest, 720p, 480p, ou 360p`
-            });
-          }
         }
       }
-      downloadUrl = format.url;
     }
 
-    if (!downloadUrl) {
-      return res.status(500).json({
+    if (!selectedFormat || !selectedFormat.url) {
+      return res.status(400).json({
         success: false,
-        error: 'Impossible de générer l\'URL de téléchargement. Le format sélectionné n\'est pas disponible.',
-        details: 'YouTube peut avoir des restrictions sur cette vidéo. Essayez une autre vidéo ou un autre format.',
-        timestamp: new Date().toISOString()
+        error: 'Aucun format disponible pour cette vidéo. Utilisez /stream pour un téléchargement direct.',
+        suggestion: 'Essayez: /stream?urlytb=' + encodeURIComponent(urlytb) + '&type=' + type
       });
     }
 
-    const availableQualities = info.formats
-      .filter(f => f.hasVideo && f.hasAudio && f.height)
+    downloadUrl = selectedFormat.url;
+
+    const availableQualities = formats
+      .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.height)
       .map(f => `${f.height}p`)
       .filter((v, i, a) => a.indexOf(v) === i)
       .sort((a, b) => parseInt(b) - parseInt(a));
 
+    const durationSeconds = info.duration || 0;
+    const minutes = Math.floor(durationSeconds / 60);
+    const seconds = durationSeconds % 60;
+
     res.json({
       success: true,
-      title: info.videoDetails.title,
-      author: info.videoDetails.author.name,
-      duration: `${Math.floor(info.videoDetails.lengthSeconds / 60)}:${(info.videoDetails.lengthSeconds % 60).toString().padStart(2, '0')}`,
-      thumbnail: info.videoDetails.thumbnails[info.videoDetails.thumbnails.length - 1]?.url,
+      title: info.title,
+      author: info.uploader || info.channel,
+      duration: `${minutes}:${seconds.toString().padStart(2, '0')}`,
+      thumbnail: info.thumbnail,
       url: downloadUrl,
-      quality: format.qualityLabel || `${format.audioBitrate}kbps`,
+      quality: selectedFormat.format_note || `${selectedFormat.height}p` || `${selectedFormat.abr}kbps`,
       type: type.toUpperCase(),
-      container: format.container,
-      hasAudio: format.hasAudio,
-      hasVideo: format.hasVideo,
-      filesize: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'N/A',
+      container: selectedFormat.ext,
+      hasAudio: selectedFormat.acodec !== 'none',
+      hasVideo: selectedFormat.vcodec !== 'none',
+      filesize: selectedFormat.filesize ? `${(selectedFormat.filesize / 1024 / 1024).toFixed(2)} MB` : 'N/A',
       availableQualities: availableQualities,
-      service: 'YouTube Direct (ytdl-core)',
-      timestamp: new Date().toISOString()
+      service: 'YouTube Direct (yt-dlp)',
+      timestamp: new Date().toISOString(),
+      streamUrl: `/stream?urlytb=${encodeURIComponent(urlytb)}&type=${type}${quality ? '&quality=' + quality : ''}`
     });
 
   } catch (error) {
@@ -399,4 +324,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📝 Endpoints disponibles:`);
   console.log(`   - GET /recherche?titre=...`);
   console.log(`   - GET /download?urlytb=...&type=MP3|MP4`);
+  console.log(`   - GET /stream?urlytb=...&type=MP3|MP4`);
+  console.log(`🔧 Powered by yt-dlp`);
 });
