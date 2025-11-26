@@ -1,7 +1,7 @@
 # CREATION-API
 
 ## Vue d'ensemble
-API complète pour rechercher et télécharger des vidéos YouTube avec support MP3 et MP4 en différentes qualités.
+API multi-plateforme pour télécharger des vidéos depuis TikTok (et bientôt d'autres plateformes).
 
 ## Endpoints
 
@@ -9,48 +9,59 @@ API complète pour rechercher et télécharger des vidéos YouTube avec support 
 - **URL**: `GET /`
 - **Description**: Informations sur l'API et exemples d'utilisation
 
-### 2. Recherche de vidéos
-- **URL**: `GET /recherche?titre=<votre_recherche>`
-- **Description**: Recherche de vidéos YouTube par titre
+### 2. Téléchargement (infos JSON)
+- **URL**: `GET /download?url=<URL_VIDEO>`
+- **Description**: Obtenir les informations et liens de téléchargement
 - **Paramètres**:
-  - `titre` (requis): Mots-clés de recherche
-- **Exemple**: `/recherche?titre=metamorphosis`
+  - `url` (requis): URL de la vidéo TikTok
+- **Exemple**: `/download?url=https://www.tiktok.com/@user/video/123456`
+- **Réponse**:
+  ```json
+  {
+    "success": true,
+    "platform": "tiktok",
+    "type": "video",
+    "title": "Titre de la vidéo",
+    "author": "Nom de l'auteur",
+    "videoUrl": "https://...",
+    "audioUrl": "https://...",
+    "streamUrl": "/stream?url=...",
+    "streamAudioUrl": "/stream?url=...&type=audio"
+  }
+  ```
 
-### 3. Téléchargement de vidéos/audio
-- **URL**: `GET /download?urlytb=<URL_YOUTUBE>&type=<MP3|MP4>&quality=<qualité>`
-- **Description**: Obtenir le lien de téléchargement direct pour une vidéo YouTube
+### 3. Stream (téléchargement direct)
+- **URL**: `GET /stream?url=<URL_VIDEO>&type=<video|audio>`
+- **Description**: Téléchargement direct du fichier
 - **Paramètres**:
-  - `urlytb` (requis): URL complète de la vidéo YouTube
-  - `type` (requis): Format souhaité (MP3 pour audio, MP4 pour vidéo)
-  - `quality` (optionnel): Qualité souhaitée
-    - Pour MP4: `highest`, `lowest`, `720p`, `480p`, `360p`, `240p`, `144p`
-    - Pour MP3: qualité audio automatique (meilleur bitrate disponible)
+  - `url` (requis): URL de la vidéo TikTok
+  - `type` (optionnel): `video` (défaut) ou `audio`
 - **Exemples**:
-  - `/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3`
-  - `/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720p`
+  - Vidéo: `/stream?url=https://www.tiktok.com/@user/video/123456`
+  - Audio: `/stream?url=https://www.tiktok.com/@user/video/123456&type=audio`
 
 ## Architecture
 
 ### Backend
 - **Framework**: Node.js avec Express
 - **Port**: 5000 (bind sur 0.0.0.0)
-- **Librairie principale**: @ybd-project/ytdl-core (v6.0.8)
+- **Librairie principale**: @tobyg74/tiktok-api-dl
 
-### Services externes
-- API de recherche YouTube: apiv3-2l3o.onrender.com
-- Téléchargement direct: YouTube via ytdl-core
+## Plateformes supportées
+- ✅ TikTok (vidéos et slideshows)
+- ⏳ Instagram (en développement)
+- ⏳ Twitter/X (en développement)
+- ⏳ Facebook (en développement)
+- ❌ YouTube (bloqué par protection anti-bot)
 
 ## Fonctionnalités
-- ✅ Recherche de vidéos par titre
-- ✅ Téléchargement MP3 (audio uniquement)
-- ✅ Téléchargement MP4 (vidéo avec audio)
-- ✅ Sélection de qualité flexible
-- ✅ Informations détaillées sur les vidéos (titre, auteur, durée, miniature)
-- ✅ URLs de téléchargement direct
-- ✅ Validation des URLs YouTube
+- ✅ Téléchargement de vidéos TikTok
+- ✅ Téléchargement audio TikTok
+- ✅ Support des slideshows TikTok
+- ✅ Informations détaillées (titre, auteur, statistiques)
+- ✅ Streaming direct vers le client
 
 ## Modifications récentes
-- 2025-11-25: Migration vers @ybd-project/ytdl-core pour le téléchargement direct YouTube
-- 2025-11-25: Ajout du support de sélection de qualité pour MP4
-- 2025-11-25: Amélioration de la sélection automatique des formats audio et vidéo
-- 2025-11-25: Initialisation du projet avec endpoints de recherche et téléchargement
+- 2025-11-26: Migration vers TikTok API (YouTube bloqué)
+- 2025-11-26: Ajout du support TikTok avec @tobyg74/tiktok-api-dl
+- 2025-11-25: Tentatives avec YouTube (ytdl-core, yt-dlp, Cobalt) - toutes bloquées

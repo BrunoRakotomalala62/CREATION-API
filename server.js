@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const y2mate = require('y2mate-dl');
+const TiktokDL = require('@tobyg74/tiktok-api-dl');
 
 const app = express();
 const PORT = 5000;
@@ -9,156 +9,219 @@ const PORT = 5000;
 app.use(cors());
 app.use(express.json());
 
-function validateYouTubeURL(url) {
-  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-  return youtubeRegex.test(url);
+function detectPlatform(url) {
+  const platforms = {
+    tiktok: /tiktok\.com|vm\.tiktok/i,
+    instagram: /instagram\.com|instagr\.am/i,
+    twitter: /twitter\.com|x\.com/i,
+    facebook: /facebook\.com|fb\.watch/i,
+    reddit: /reddit\.com|redd\.it/i
+  };
+
+  for (const [platform, regex] of Object.entries(platforms)) {
+    if (regex.test(url)) {
+      return platform;
+    }
+  }
+  return 'unknown';
 }
 
-function getVideoId(url) {
-  const match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-  return match ? match[1] : null;
+async function downloadTikTok(url) {
+  try {
+    console.log('Downloading TikTok:', url);
+    const result = await TiktokDL.Downloader(url, { version: 'v2' });
+    console.log('TikTok result:', JSON.stringify(result).substring(0, 500));
+    
+    if (result.status === 'success' && result.result) {
+      const data = result.result;
+      
+      if (data.type === 'video') {
+        let videoUrl = data.video;
+        if (typeof videoUrl === 'object' && videoUrl.playAddr) {
+          videoUrl = Array.isArray(videoUrl.playAddr) ? videoUrl.playAddr[0] : videoUrl.playAddr;
+        }
+        
+        let audioUrl = data.music;
+        if (typeof audioUrl === 'object' && audioUrl.playUrl) {
+          audioUrl = Array.isArray(audioUrl.playUrl) ? audioUrl.playUrl[0] : audioUrl.playUrl;
+        }
+        
+        return {
+          success: true,
+          platform: 'tiktok',
+          type: 'video',
+          title: data.desc || 'TikTok Video',
+          author: data.author?.nickname || data.author?.unique_id || 'Unknown',
+          videoUrl: videoUrl,
+          audioUrl: audioUrl,
+          thumbnail: data.cover,
+          duration: data.duration,
+          stats: {
+            plays: data.play_count,
+            likes: data.digg_count,
+            comments: data.comment_count,
+            shares: data.share_count
+          }
+        };
+      } else if (data.type === 'image') {
+        let audioUrl = data.music;
+        if (typeof audioUrl === 'object' && audioUrl.playUrl) {
+          audioUrl = Array.isArray(audioUrl.playUrl) ? audioUrl.playUrl[0] : audioUrl.playUrl;
+        }
+        
+        return {
+          success: true,
+          platform: 'tiktok',
+          type: 'images',
+          title: data.desc || 'TikTok Slideshow',
+          author: data.author?.nickname || data.author?.unique_id || 'Unknown',
+          images: data.images,
+          audioUrl: audioUrl,
+          thumbnail: data.cover
+        };
+      }
+    }
+    
+    console.log('TikTok failed result:', result);
+    throw new Error(result.message || 'Format de réponse invalide');
+  } catch (error) {
+    console.error('TikTok download error:', error);
+    throw new Error(`Erreur TikTok: ${error.message}`);
+  }
 }
 
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'API YouTube - Recherche et Téléchargement Direct',
-    description: 'Téléchargez des vidéos et de la musique YouTube en MP3 et MP4 avec différentes qualités',
+    message: 'API Téléchargement Vidéo Multi-Plateformes',
+    description: 'Téléchargez des vidéos depuis TikTok, Instagram, Twitter, et plus!',
     endpoints: {
-      recherche: '/recherche?titre=votre_recherche',
-      download: '/download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=720|480|360 (retourne les infos JSON)',
-      stream: '/stream?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=720|480|360 (téléchargement DIRECT)'
+      download: '/download?url=URL_VIDEO (retourne les infos JSON avec liens)',
+      stream: '/stream?url=URL_VIDEO&type=video|audio (téléchargement DIRECT)'
     },
     examples: {
-      recherche: '/recherche?titre=metamorphosis',
-      downloadMP3: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3',
-      downloadMP4: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720',
-      streamMP3: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3',
-      streamMP4: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720'
+      tiktokDownload: '/download?url=https://www.tiktok.com/@user/video/123456',
+      tiktokStream: '/stream?url=https://www.tiktok.com/@user/video/123456',
+      tiktokAudio: '/stream?url=https://www.tiktok.com/@user/video/123456&type=audio'
     },
-    availableQualities: {
-      MP4: ['1080', '720', '480', '360', '240', '144'],
-      MP3: ['128kbps (audio uniquement)']
+    supportedPlatforms: {
+      working: ['TikTok (vidéos et slideshows)'],
+      comingSoon: ['Instagram', 'Twitter', 'Facebook', 'Reddit']
     },
-    features: [
-      'Téléchargement direct YouTube',
-      'Support MP3 et MP4',
-      'Choix de qualité flexible',
-      'Recherche par titre',
-      'Endpoint /stream pour téléchargement direct!'
-    ]
+    note: 'TikTok fonctionne parfaitement! Autres plateformes en développement.'
   });
 });
 
-app.get('/recherche', async (req, res) => {
+app.get('/download', async (req, res) => {
   try {
-    const { titre } = req.query;
+    const { url } = req.query;
     
-    if (!titre) {
+    if (!url) {
       return res.status(400).json({
         success: false,
-        error: 'Paramètre "titre" manquant. Utilisez: /recherche?titre=votre_recherche'
+        error: 'Paramètre "url" manquant. Utilisez: /download?url=URL_VIDEO'
       });
     }
 
-    const { data } = await axios.get(`https://apiv3-2l3o.onrender.com/yts?title=${encodeURIComponent(titre)}`);
-    
-    const videos = data.videos.slice(0, 6).map((vid, i) => ({
-      index: i + 1,
-      title: vid.title,
-      duration: vid.duration,
-      url: vid.url,
-      thumb: vid.thumb,
-      channel: vid.channel || 'N/A'
-    }));
+    const platform = detectPlatform(url);
+    console.log(`Detected platform: ${platform} for URL: ${url}`);
 
-    res.json({
-      success: true,
-      query: titre,
-      count: videos.length,
-      videos: videos
-    });
+    if (platform === 'unknown') {
+      return res.status(400).json({
+        success: false,
+        error: 'Plateforme non reconnue. Plateformes supportées: TikTok'
+      });
+    }
+
+    let result;
+
+    if (platform === 'tiktok') {
+      result = await downloadTikTok(url);
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: `Plateforme "${platform}" pas encore supportée. Seul TikTok fonctionne actuellement.`
+      });
+    }
+
+    result.streamUrl = `/stream?url=${encodeURIComponent(url)}`;
+    result.streamAudioUrl = `/stream?url=${encodeURIComponent(url)}&type=audio`;
+    result.timestamp = new Date().toISOString();
+
+    res.json(result);
 
   } catch (error) {
-    console.error('Erreur recherche:', error.message);
+    console.error('Erreur download:', error.message);
     res.status(500).json({
       success: false,
-      error: error.response?.data?.error || error.message || 'Erreur lors de la recherche'
+      error: error.message || 'Erreur lors du téléchargement',
+      timestamp: new Date().toISOString()
     });
   }
 });
 
 app.get('/stream', async (req, res) => {
   try {
-    const { urlytb, type, quality } = req.query;
+    const { url, type } = req.query;
     
-    if (!urlytb) {
+    if (!url) {
       return res.status(400).json({
         success: false,
-        error: 'Paramètre "urlytb" manquant'
+        error: 'Paramètre "url" manquant'
       });
     }
 
-    if (!type || !['MP3', 'MP4', 'mp3', 'mp4'].includes(type)) {
+    const platform = detectPlatform(url);
+    
+    if (platform !== 'tiktok') {
       return res.status(400).json({
         success: false,
-        error: 'Paramètre "type" invalide. Utilisez: MP3 ou MP4'
+        error: 'Seul TikTok est supporté pour le streaming direct'
       });
     }
 
-    if (!validateYouTubeURL(urlytb)) {
-      return res.status(400).json({
-        success: false,
-        error: 'URL YouTube invalide'
-      });
-    }
+    const result = await downloadTikTok(url);
 
-    const isAudio = type.toUpperCase() === 'MP3';
-    let result;
-
-    try {
-      if (isAudio) {
-        result = await y2mate.ytmp3(urlytb);
-      } else {
-        const qualityNum = quality || '720';
-        if (qualityNum === '720' || qualityNum === 'highest') {
-          result = await y2mate.yt720(urlytb);
-        } else if (qualityNum === '480') {
-          result = await y2mate.yt480(urlytb);
-        } else if (qualityNum === '360') {
-          result = await y2mate.yt360(urlytb);
-        } else {
-          result = await y2mate.yt720(urlytb);
-        }
-      }
-    } catch (y2mateError) {
-      console.error('Y2mate error:', y2mateError);
-      return res.status(500).json({
-        success: false,
-        error: 'Service de téléchargement temporairement indisponible'
-      });
-    }
-
-    if (!result || !result.dl_link) {
+    if (!result.success) {
       return res.status(500).json({
         success: false,
         error: 'Impossible de récupérer le lien de téléchargement'
       });
     }
 
-    const extension = isAudio ? 'mp3' : 'mp4';
-    const filename = `${result.title || 'download'}.${extension}`.replace(/[^\w\s.-]/g, '_');
+    const isAudio = type === 'audio';
+    let downloadUrl;
+    let filename;
+    let contentType;
+
+    if (isAudio) {
+      downloadUrl = result.audioUrl;
+      filename = `${result.title || 'tiktok_audio'}.mp3`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
+      contentType = 'audio/mpeg';
+    } else {
+      downloadUrl = result.videoUrl;
+      filename = `${result.title || 'tiktok_video'}.mp4`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
+      contentType = 'video/mp4';
+    }
+
+    if (!downloadUrl) {
+      return res.status(500).json({
+        success: false,
+        error: isAudio ? 'Aucun audio disponible' : 'Aucune vidéo disponible'
+      });
+    }
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', isAudio ? 'audio/mpeg' : 'video/mp4');
+    res.setHeader('Content-Type', contentType);
 
     const response = await axios({
       method: 'get',
-      url: result.dl_link,
+      url: downloadUrl,
       responseType: 'stream',
       timeout: 300000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tiktok.com/'
       }
     });
 
@@ -175,92 +238,10 @@ app.get('/stream', async (req, res) => {
   }
 });
 
-app.get('/download', async (req, res) => {
-  try {
-    const { urlytb, type, quality } = req.query;
-    
-    if (!urlytb) {
-      return res.status(400).json({
-        success: false,
-        error: 'Paramètre "urlytb" manquant. Utilisez: /download?urlytb=URL_YOUTUBE&type=MP3|MP4'
-      });
-    }
-
-    if (!type || !['MP3', 'MP4', 'mp3', 'mp4'].includes(type)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Paramètre "type" invalide. Utilisez: MP3 ou MP4'
-      });
-    }
-
-    if (!validateYouTubeURL(urlytb)) {
-      return res.status(400).json({
-        success: false,
-        error: 'URL YouTube invalide'
-      });
-    }
-
-    const isAudio = type.toUpperCase() === 'MP3';
-    let result;
-
-    try {
-      if (isAudio) {
-        result = await y2mate.ytmp3(urlytb);
-      } else {
-        const qualityNum = quality || '720';
-        if (qualityNum === '720' || qualityNum === 'highest') {
-          result = await y2mate.yt720(urlytb);
-        } else if (qualityNum === '480') {
-          result = await y2mate.yt480(urlytb);
-        } else if (qualityNum === '360') {
-          result = await y2mate.yt360(urlytb);
-        } else {
-          result = await y2mate.yt720(urlytb);
-        }
-      }
-    } catch (y2mateError) {
-      console.error('Y2mate error:', y2mateError);
-      return res.status(500).json({
-        success: false,
-        error: 'Service de téléchargement temporairement indisponible',
-        details: y2mateError.message
-      });
-    }
-
-    if (!result || !result.dl_link) {
-      return res.status(500).json({
-        success: false,
-        error: 'Impossible de récupérer le lien de téléchargement'
-      });
-    }
-
-    res.json({
-      success: true,
-      title: result.title,
-      url: result.dl_link,
-      type: type.toUpperCase(),
-      quality: isAudio ? '128kbps' : `${quality || '720'}p`,
-      filesize: result.fsize || 'N/A',
-      streamUrl: `/stream?urlytb=${encodeURIComponent(urlytb)}&type=${type}${quality ? '&quality=' + quality : ''}`,
-      service: 'Y2mate',
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Erreur download:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Erreur lors du téléchargement',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 API démarrée sur http://0.0.0.0:${PORT}`);
   console.log(`📝 Endpoints disponibles:`);
-  console.log(`   - GET /recherche?titre=...`);
-  console.log(`   - GET /download?urlytb=...&type=MP3|MP4`);
-  console.log(`   - GET /stream?urlytb=...&type=MP3|MP4`);
-  console.log(`🔧 Powered by Y2mate`);
+  console.log(`   - GET /download?url=...`);
+  console.log(`   - GET /stream?url=...`);
+  console.log(`🎬 Plateforme supportée: TikTok`);
 });
