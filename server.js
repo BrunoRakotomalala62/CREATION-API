@@ -1,10 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const { exec, spawn } = require('child_process');
-const { promisify } = require('util');
-
-const execAsync = promisify(exec);
 
 const app = express();
 const PORT = 5000;
@@ -13,17 +9,59 @@ app.use(cors());
 app.use(express.json());
 
 function validateYouTubeURL(url) {
-  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
   return youtubeRegex.test(url);
 }
 
-async function getVideoInfo(url) {
-  try {
-    const { stdout } = await execAsync(`yt-dlp -j "${url}"`, { maxBuffer: 10 * 1024 * 1024 });
-    return JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(`Erreur lors de la récupération des informations: ${error.message}`);
+async function getCobaltDownload(url, isAudio = false, quality = '720') {
+  const cobaltInstances = [
+    'https://cobalt-api.kwiatekmiki.com',
+    'https://cobalt.api.timelessnesses.me',
+    'https://api.cobalt.tools'
+  ];
+
+  const requestBody = {
+    url: url,
+    videoQuality: quality,
+    audioFormat: 'mp3',
+    audioBitrate: '128',
+    filenameStyle: 'basic',
+    downloadMode: isAudio ? 'audio' : 'auto'
+  };
+
+  for (const instance of cobaltInstances) {
+    try {
+      const response = await axios.post(instance, requestBody, {
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      });
+
+      if (response.data && (response.data.status === 'tunnel' || response.data.status === 'redirect')) {
+        return {
+          success: true,
+          url: response.data.url,
+          filename: response.data.filename,
+          instance: instance
+        };
+      } else if (response.data && response.data.status === 'picker') {
+        const firstItem = response.data.picker[0];
+        return {
+          success: true,
+          url: firstItem.url,
+          filename: response.data.audioFilename || 'download',
+          instance: instance
+        };
+      }
+    } catch (error) {
+      console.log(`Instance ${instance} failed:`, error.message);
+      continue;
+    }
   }
+
+  throw new Error('Tous les serveurs de téléchargement sont indisponibles. Réessayez plus tard.');
 }
 
 app.get('/', (req, res) => {
@@ -33,32 +71,27 @@ app.get('/', (req, res) => {
     description: 'Téléchargez des vidéos et de la musique YouTube en MP3 et MP4 avec différentes qualités',
     endpoints: {
       recherche: '/recherche?titre=votre_recherche',
-      download: '/download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p (retourne les infos JSON)',
-      stream: '/stream?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p (téléchargement DIRECT)'
+      download: '/download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=720|480|360 (retourne les infos JSON)',
+      stream: '/stream?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=720|480|360 (téléchargement DIRECT)'
     },
     examples: {
       recherche: '/recherche?titre=metamorphosis',
       downloadMP3: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3',
-      downloadMP4_highest: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=highest',
-      streamMP3: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3 (TÉLÉCHARGEMENT DIRECT)',
-      streamMP4_720p: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720p (TÉLÉCHARGEMENT DIRECT)'
+      downloadMP4: '/download?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720',
+      streamMP3: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP3',
+      streamMP4: '/stream?urlytb=https://www.youtube.com/watch?v=dQw4w9WgXcQ&type=MP4&quality=720'
     },
     availableQualities: {
-      MP4: ['highest (meilleure qualité)', 'lowest (plus petite taille)', '720p', '480p', '360p', '240p', '144p'],
+      MP4: ['1080', '720', '480', '360', '240', '144'],
       MP3: ['128kbps (audio uniquement)']
     },
     features: [
-      'Téléchargement direct YouTube via yt-dlp',
+      'Téléchargement direct YouTube',
       'Support MP3 et MP4',
       'Choix de qualité flexible',
-      'Informations détaillées sur la vidéo',
       'Recherche par titre',
       'Endpoint /stream pour téléchargement direct!'
-    ],
-    notes: {
-      download: 'Retourne les informations et l\'URL de téléchargement en JSON',
-      stream: 'RECOMMANDÉ pour mobile: Télécharge directement le fichier dans votre répertoire de téléchargements!'
-    }
+    ]
   });
 });
 
@@ -125,72 +158,44 @@ app.get('/stream', async (req, res) => {
       });
     }
 
-    const info = await getVideoInfo(urlytb);
-    const isAudioOnly = type.toUpperCase() === 'MP3';
-    
-    const sanitizedTitle = info.title
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, '_')
-      .substring(0, 100);
-    
-    const extension = isAudioOnly ? 'mp3' : 'mp4';
-    const filename = `${sanitizedTitle}.${extension}`;
+    const isAudio = type.toUpperCase() === 'MP3';
+    const videoQuality = quality || '720';
 
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', isAudioOnly ? 'audio/mpeg' : 'video/mp4');
+    const result = await getCobaltDownload(urlytb, isAudio, videoQuality);
 
-    let formatArg;
-    if (isAudioOnly) {
-      formatArg = '-f bestaudio -x --audio-format mp3';
-    } else {
-      const requestedQuality = quality || 'highest';
-      if (requestedQuality === 'highest') {
-        formatArg = '-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"';
-      } else if (requestedQuality === 'lowest') {
-        formatArg = '-f "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst"';
-      } else {
-        const height = parseInt(requestedQuality);
-        formatArg = `-f "bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best"`;
-      }
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: 'Impossible de récupérer le lien de téléchargement'
+      });
     }
 
-    const ytdlp = spawn('yt-dlp', [
-      ...formatArg.split(' '),
-      '-o', '-',
-      urlytb
-    ], { shell: true });
+    const extension = isAudio ? 'mp3' : 'mp4';
+    const filename = result.filename || `download.${extension}`;
 
-    ytdlp.stdout.pipe(res);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', isAudio ? 'audio/mpeg' : 'video/mp4');
 
-    ytdlp.stderr.on('data', (data) => {
-      console.error('yt-dlp stderr:', data.toString());
-    });
-
-    ytdlp.on('error', (error) => {
-      console.error('yt-dlp error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          error: 'Erreur lors du téléchargement'
-        });
+    const response = await axios({
+      method: 'get',
+      url: result.url,
+      responseType: 'stream',
+      timeout: 300000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
 
-    ytdlp.on('close', (code) => {
-      if (code !== 0 && !res.headersSent) {
-        res.status(500).json({
-          success: false,
-          error: `yt-dlp exited with code ${code}`
-        });
-      }
-    });
+    response.data.pipe(res);
 
   } catch (error) {
     console.error('Erreur stream:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Erreur lors du streaming'
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Erreur lors du streaming'
+      });
+    }
   }
 });
 
@@ -201,7 +206,7 @@ app.get('/download', async (req, res) => {
     if (!urlytb) {
       return res.status(400).json({
         success: false,
-        error: 'Paramètre "urlytb" manquant. Utilisez: /download?urlytb=URL_YOUTUBE&type=MP3|MP4&quality=highest|lowest|720p|480p|360p'
+        error: 'Paramètre "urlytb" manquant. Utilisez: /download?urlytb=URL_YOUTUBE&type=MP3|MP4'
       });
     }
 
@@ -215,97 +220,24 @@ app.get('/download', async (req, res) => {
     if (!validateYouTubeURL(urlytb)) {
       return res.status(400).json({
         success: false,
-        error: 'URL YouTube invalide. Utilisez un format valide: https://www.youtube.com/watch?v=VIDEO_ID ou https://youtu.be/VIDEO_ID'
+        error: 'URL YouTube invalide'
       });
     }
 
-    const info = await getVideoInfo(urlytb);
-    const isAudioOnly = type.toUpperCase() === 'MP3';
-    
-    const formats = info.formats || [];
-    let selectedFormat;
-    let downloadUrl;
+    const isAudio = type.toUpperCase() === 'MP3';
+    const videoQuality = quality || '720';
 
-    if (isAudioOnly) {
-      const audioFormats = formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none' && f.url);
-      if (audioFormats.length > 0) {
-        selectedFormat = audioFormats.reduce((best, current) => {
-          const bestBitrate = best.abr || 0;
-          const currentBitrate = current.abr || 0;
-          return currentBitrate > bestBitrate ? current : best;
-        });
-      } else {
-        const anyAudio = formats.filter(f => f.acodec !== 'none' && f.url);
-        if (anyAudio.length > 0) {
-          selectedFormat = anyAudio[0];
-        }
-      }
-    } else {
-      const requestedQuality = quality || 'highest';
-      const videoFormats = formats.filter(f => 
-        f.vcodec !== 'none' && 
-        f.acodec !== 'none' && 
-        f.url &&
-        f.height
-      );
-
-      if (videoFormats.length > 0) {
-        if (requestedQuality === 'highest') {
-          selectedFormat = videoFormats.reduce((best, current) => {
-            return (current.height || 0) > (best.height || 0) ? current : best;
-          });
-        } else if (requestedQuality === 'lowest') {
-          selectedFormat = videoFormats.reduce((best, current) => {
-            return (current.height || 9999) < (best.height || 9999) ? current : best;
-          });
-        } else {
-          const targetHeight = parseInt(requestedQuality);
-          selectedFormat = videoFormats.reduce((best, current) => {
-            const bestDiff = Math.abs((best.height || 0) - targetHeight);
-            const currentDiff = Math.abs((current.height || 0) - targetHeight);
-            return currentDiff < bestDiff ? current : best;
-          });
-        }
-      }
-    }
-
-    if (!selectedFormat || !selectedFormat.url) {
-      return res.status(400).json({
-        success: false,
-        error: 'Aucun format disponible pour cette vidéo. Utilisez /stream pour un téléchargement direct.',
-        suggestion: 'Essayez: /stream?urlytb=' + encodeURIComponent(urlytb) + '&type=' + type
-      });
-    }
-
-    downloadUrl = selectedFormat.url;
-
-    const availableQualities = formats
-      .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.height)
-      .map(f => `${f.height}p`)
-      .filter((v, i, a) => a.indexOf(v) === i)
-      .sort((a, b) => parseInt(b) - parseInt(a));
-
-    const durationSeconds = info.duration || 0;
-    const minutes = Math.floor(durationSeconds / 60);
-    const seconds = durationSeconds % 60;
+    const result = await getCobaltDownload(urlytb, isAudio, videoQuality);
 
     res.json({
       success: true,
-      title: info.title,
-      author: info.uploader || info.channel,
-      duration: `${minutes}:${seconds.toString().padStart(2, '0')}`,
-      thumbnail: info.thumbnail,
-      url: downloadUrl,
-      quality: selectedFormat.format_note || `${selectedFormat.height}p` || `${selectedFormat.abr}kbps`,
+      url: result.url,
+      filename: result.filename,
       type: type.toUpperCase(),
-      container: selectedFormat.ext,
-      hasAudio: selectedFormat.acodec !== 'none',
-      hasVideo: selectedFormat.vcodec !== 'none',
-      filesize: selectedFormat.filesize ? `${(selectedFormat.filesize / 1024 / 1024).toFixed(2)} MB` : 'N/A',
-      availableQualities: availableQualities,
-      service: 'YouTube Direct (yt-dlp)',
-      timestamp: new Date().toISOString(),
-      streamUrl: `/stream?urlytb=${encodeURIComponent(urlytb)}&type=${type}${quality ? '&quality=' + quality : ''}`
+      quality: isAudio ? '128kbps' : `${videoQuality}p`,
+      streamUrl: `/stream?urlytb=${encodeURIComponent(urlytb)}&type=${type}${quality ? '&quality=' + quality : ''}`,
+      service: 'Cobalt',
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -313,7 +245,6 @@ app.get('/download', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Erreur lors du téléchargement',
-      details: 'Assurez-vous que l\'URL YouTube est valide et accessible.',
       timestamp: new Date().toISOString()
     });
   }
@@ -325,5 +256,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   - GET /recherche?titre=...`);
   console.log(`   - GET /download?urlytb=...&type=MP3|MP4`);
   console.log(`   - GET /stream?urlytb=...&type=MP3|MP4`);
-  console.log(`🔧 Powered by yt-dlp`);
+  console.log(`🔧 Powered by Cobalt API`);
 });
