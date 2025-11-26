@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const TiktokDL = require('@tobyg74/tiktok-api-dl');
+const { getFbVideoInfo } = require('fb-downloader-scrapper');
 
 const app = express();
 const PORT = 5000;
@@ -90,6 +91,34 @@ async function downloadTikTok(url) {
   }
 }
 
+async function downloadFacebook(url) {
+  try {
+    console.log('Downloading Facebook:', url);
+    const result = await getFbVideoInfo(url);
+    console.log('Facebook result:', JSON.stringify(result).substring(0, 500));
+    
+    if (result && (result.hd || result.sd)) {
+      return {
+        success: true,
+        platform: 'facebook',
+        type: 'video',
+        title: 'Facebook Video',
+        thumbnail: result.thumbnail || null,
+        duration: result.duration_ms ? Math.round(result.duration_ms / 1000) : null,
+        videoUrl: result.hd || result.sd,
+        videoUrlHD: result.hd,
+        videoUrlSD: result.sd
+      };
+    }
+    
+    console.log('Facebook failed result:', result);
+    throw new Error('Format de réponse invalide ou vidéo non trouvée');
+  } catch (error) {
+    console.error('Facebook download error:', error);
+    throw new Error(`Erreur Facebook: ${error.message}`);
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({
     success: true,
@@ -102,13 +131,15 @@ app.get('/', (req, res) => {
     examples: {
       tiktokDownload: '/download?url=https://www.tiktok.com/@user/video/123456',
       tiktokStream: '/stream?url=https://www.tiktok.com/@user/video/123456',
-      tiktokAudio: '/stream?url=https://www.tiktok.com/@user/video/123456&type=audio'
+      tiktokAudio: '/stream?url=https://www.tiktok.com/@user/video/123456&type=audio',
+      facebookDownload: '/download?url=https://www.facebook.com/share/r/xxxxx',
+      facebookStream: '/stream?url=https://www.facebook.com/share/r/xxxxx'
     },
     supportedPlatforms: {
-      working: ['TikTok (vidéos et slideshows)'],
-      comingSoon: ['Instagram', 'Twitter', 'Facebook', 'Reddit']
+      working: ['TikTok (vidéos et slideshows)', 'Facebook (vidéos)'],
+      comingSoon: ['Instagram', 'Twitter', 'Reddit']
     },
-    note: 'TikTok fonctionne parfaitement! Autres plateformes en développement.'
+    note: 'TikTok et Facebook fonctionnent! Autres plateformes en développement.'
   });
 });
 
@@ -129,7 +160,7 @@ app.get('/download', async (req, res) => {
     if (platform === 'unknown') {
       return res.status(400).json({
         success: false,
-        error: 'Plateforme non reconnue. Plateformes supportées: TikTok'
+        error: 'Plateforme non reconnue. Plateformes supportées: TikTok, Facebook'
       });
     }
 
@@ -137,10 +168,12 @@ app.get('/download', async (req, res) => {
 
     if (platform === 'tiktok') {
       result = await downloadTikTok(url);
+    } else if (platform === 'facebook') {
+      result = await downloadFacebook(url);
     } else {
       return res.status(400).json({
         success: false,
-        error: `Plateforme "${platform}" pas encore supportée. Seul TikTok fonctionne actuellement.`
+        error: `Plateforme "${platform}" pas encore supportée. TikTok et Facebook fonctionnent actuellement.`
       });
     }
 
@@ -173,14 +206,19 @@ app.get('/stream', async (req, res) => {
 
     const platform = detectPlatform(url);
     
-    if (platform !== 'tiktok') {
+    if (platform !== 'tiktok' && platform !== 'facebook') {
       return res.status(400).json({
         success: false,
-        error: 'Seul TikTok est supporté pour le streaming direct'
+        error: 'Seuls TikTok et Facebook sont supportés pour le streaming direct'
       });
     }
 
-    const result = await downloadTikTok(url);
+    let result;
+    if (platform === 'tiktok') {
+      result = await downloadTikTok(url);
+    } else if (platform === 'facebook') {
+      result = await downloadFacebook(url);
+    }
 
     if (!result.success) {
       return res.status(500).json({
@@ -196,11 +234,11 @@ app.get('/stream', async (req, res) => {
 
     if (isAudio) {
       downloadUrl = result.audioUrl;
-      filename = `${result.title || 'tiktok_audio'}.mp3`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
+      filename = `${result.title || platform + '_audio'}.mp3`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
       contentType = 'audio/mpeg';
     } else {
       downloadUrl = result.videoUrl;
-      filename = `${result.title || 'tiktok_video'}.mp4`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
+      filename = `${result.title || platform + '_video'}.mp4`.replace(/[^\w\s.-]/g, '_').substring(0, 100);
       contentType = 'video/mp4';
     }
 
@@ -214,6 +252,8 @@ app.get('/stream', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', contentType);
 
+    const referer = platform === 'facebook' ? 'https://www.facebook.com/' : 'https://www.tiktok.com/';
+    
     const response = await axios({
       method: 'get',
       url: downloadUrl,
@@ -221,7 +261,7 @@ app.get('/stream', async (req, res) => {
       timeout: 300000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.tiktok.com/'
+        'Referer': referer
       }
     });
 
@@ -243,5 +283,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📝 Endpoints disponibles:`);
   console.log(`   - GET /download?url=...`);
   console.log(`   - GET /stream?url=...`);
-  console.log(`🎬 Plateforme supportée: TikTok`);
+  console.log(`🎬 Plateformes supportées: TikTok, Facebook`);
 });
